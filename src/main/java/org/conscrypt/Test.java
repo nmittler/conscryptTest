@@ -1,5 +1,7 @@
 package org.conscrypt;
 
+import static org.junit.Assert.assertEquals;
+
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -8,9 +10,11 @@ import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.security.Provider;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLServerSocketFactory;
 import javax.net.ssl.SSLSocket;
@@ -20,6 +24,7 @@ import javax.net.ssl.SSLSocketFactory;
  * Test app for the conscrypt security provider.
  */
 public class Test {
+  private static final String ALPN_PROTOCOL = "testProtocol";
 
   public static void main(String[] args) {
     try {
@@ -35,6 +40,10 @@ public class Test {
       client.sendMessage();
       client.awaitResponse();
 
+      if (Conscrypt.isConscrypt(provider)) {
+        assertEquals(ALPN_PROTOCOL, Conscrypt.getAlpnSelectedProtocol(client.sslSocket));
+        assertEquals(ALPN_PROTOCOL, Conscrypt.getAlpnSelectedProtocol(server.sslSocket));
+      }
       server.shutdown();
     } catch (Exception e) {
       e.printStackTrace();
@@ -53,6 +62,9 @@ public class Test {
             .newSslSocketFactory(provider, TestUtils.loadCert("ca.pem"));
         System.err.println("Client socket factory: " + factory.getClass().getName());
         sslSocket = (SSLSocket) factory.createSocket("localhost", port);
+        if (Conscrypt.isConscrypt(sslSocket)) {
+          Conscrypt.setAlpnProtocols(sslSocket, new String[]{"foo", "bar", ALPN_PROTOCOL});
+        }
       } catch (Exception e) {
         throw new RuntimeException(e);
       }
@@ -88,6 +100,7 @@ public class Test {
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private SSLServerSocket serverSocket;
+    private SSLSocket sslSocket;
 
     int start(Provider provider) {
       try {
@@ -123,10 +136,23 @@ public class Test {
 
       public void run() {
         try {
-          SSLSocket sslsocket = (SSLSocket) serverSocket.accept();
+          sslSocket = (SSLSocket) serverSocket.accept();
+          if (Conscrypt.isConscrypt(sslSocket)) {
+            Conscrypt.setAlpnProtocolSelector(sslSocket, new AlpnProtocolSelector() {
+              @Override
+              public String selectAlpnProtocol(SSLEngine engine, List<String> protocols) {
+                throw new UnsupportedOperationException();
+              }
+
+              @Override
+              public String selectAlpnProtocol(SSLSocket socket, List<String> protocols) {
+                return ALPN_PROTOCOL;
+              }
+            });
+          }
 
           BufferedReader reader = new BufferedReader(
-              new InputStreamReader(sslsocket.getInputStream()));
+              new InputStreamReader(sslSocket.getInputStream()));
 
           String string;
           while ((string = reader.readLine()) != null) {
@@ -135,7 +161,7 @@ public class Test {
           }
 
           BufferedWriter writer = new BufferedWriter(
-              new OutputStreamWriter(sslsocket.getOutputStream()));
+              new OutputStreamWriter(sslSocket.getOutputStream()));
           writer.write("*sigh* ... what???\n");
           writer.flush();
         } catch (Exception e) {
